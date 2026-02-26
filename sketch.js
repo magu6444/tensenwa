@@ -36,7 +36,7 @@ function preload() {
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
-  
+
   // 最初に表示する「点」を生成
   for (let i = 0; i < targetPointCount; i++) {
     points.push(new Point());
@@ -51,12 +51,19 @@ function draw() {
   if (points.length < targetPointCount) {
     points.push(new Point());
   }
-  
+
   // --- 衝突判定 ---
-  // 点同士の衝突
+  // 点同士の衝突 (性能向上のため、近くにある場合のみ精査する)
   for (let i = 0; i < points.length; i++) {
     for (let j = i + 1; j < points.length; j++) {
-      points[i].collideWithPoint(points[j]);
+      // 2乗距離でクイックチェック
+      let dx = points[i].x - points[j].x;
+      let dy = points[i].y - points[j].y;
+      let d2 = dx * dx + dy * dy;
+      let minDist = points[i].radius + points[j].radius;
+      if (d2 < minDist * minDist) {
+        points[i].collideWithPoint(points[j]);
+      }
     }
   }
 
@@ -70,12 +77,12 @@ function draw() {
     l.update();
     l.display();
   }
-  
+
   for (let c of waCircles) {
     c.update();
     c.display();
   }
-  
+
   // アニメーションが完了して消滅した円を配列から削除する
   waCircles = waCircles.filter(c => c.isAlive);
 }
@@ -86,7 +93,7 @@ function handleInteraction(x, y) {
   if (getAudioContext().state !== 'running') {
     getAudioContext().resume();
   }
-  
+
   let somethingClicked = false;
 
   // --- 点のクリック判定 ---
@@ -119,6 +126,12 @@ function handleInteraction(x, y) {
     let l = lines[i];
     // アニメーションが完了した線のみクリック可能
     if (l.isComplete && l.isClicked(x, y)) {
+      // 線をクリックしたら点を選択解除
+      if (selectedPoint) {
+        selectedPoint.isSelected = false;
+        selectedPoint = null;
+      }
+
       if (selectedLine === l) {
         // 同じ線を再度クリックした場合は選択解除
         playClickSound();
@@ -131,7 +144,7 @@ function handleInteraction(x, y) {
         selectedLine = l;
       } else {
         // 2本目の線を選択し、円を生成
-        playClickSound(); // ★★★ ここでクリック音を鳴らすように変更 ★★★
+        playClickSound();
         waCircles.push(new WaCircle(selectedLine, l));
         lines = lines.filter(line => line !== selectedLine && line !== l);
         selectedLine = null;
@@ -140,12 +153,12 @@ function handleInteraction(x, y) {
       break;
     }
   }
-  
+
   // --- 背景のクリック判定 ---
   if (!somethingClicked) {
     // 何か選択されていた場合のみ音を鳴らす
     if (selectedPoint || selectedLine) {
-       playClickSound();
+      playClickSound();
     }
     // 何も選択されていない場所をクリックしたら、選択をすべて解除
     if (selectedPoint) {
@@ -226,7 +239,7 @@ class Point {
     fill(0, alpha);
     ellipse(this.x, this.y, this.radius * 2, this.radius * 2);
   }
-  
+
   collideWithPoint(other) {
     if (!this.isFloating || !other.isFloating) return;
 
@@ -252,14 +265,14 @@ class Point {
 
       let vDiff = p5.Vector.sub(v1, v2);
       let posDiff = p5.Vector.sub(pos1, pos2);
-      
+
       let newV1 = p5.Vector.sub(v1, p5.Vector.mult(posDiff, vDiff.dot(posDiff) / posDiff.magSq()));
-      
+
       vDiff.mult(-1);
       posDiff.mult(-1);
-      
+
       let newV2 = p5.Vector.sub(v2, p5.Vector.mult(posDiff, vDiff.dot(posDiff) / posDiff.magSq()));
-      
+
       this.vx = newV1.x;
       this.vy = newV1.y;
       other.vx = newV2.x;
@@ -268,6 +281,13 @@ class Point {
   }
 
   collideWithLine(line) {
+    // パフォーマンス向上のため、バウンディングボックスでクイックチェック
+    let minX = min(line.p1.x, line.p2.x) - this.radius;
+    let maxX = max(line.p1.x, line.p2.x) + this.radius;
+    let minY = min(line.p1.y, line.p2.y) - this.radius;
+    let maxY = max(line.p1.y, line.p2.y) + this.radius;
+    if (this.x < minX || this.x > maxX || this.y < minY || this.y > maxY) return;
+
     let d = distToSegment(this.x, this.y, line.p1.x, line.p1.y, line.p2.x, line.p2.y);
     if (d < this.radius) {
       // 位置の補正
@@ -277,9 +297,9 @@ class Point {
       let closestPoint = p5.Vector.add(createVector(line.p1.x, line.p1.y), p5.Vector.mult(lineVec, t));
       let overlapVec = p5.Vector.sub(createVector(this.x, this.y), closestPoint);
       if (overlapVec.mag() > 0) {
-          let overlap = this.radius - overlapVec.mag();
-          this.x += overlapVec.normalize().x * overlap;
-          this.y += overlapVec.normalize().y * overlap;
+        let overlap = this.radius - overlapVec.mag();
+        this.x += overlapVec.normalize().x * overlap;
+        this.y += overlapVec.normalize().y * overlap;
       }
 
       // 速度の反射
@@ -300,9 +320,10 @@ class Point {
 
   // クリックされたか判定
   isClicked(mx, my) {
-    // クリック判定エリアを少し広げる
-    let d = dist(mx, my, this.x, this.y);
-    return d < this.radius * 3;
+    // クリック判定エリアをさらに広げる (iPad等に対応)
+    let dx = mx - this.x;
+    let dy = my - this.y;
+    return (dx * dx + dy * dy) < (this.radius * 6) * (this.radius * 6);
   }
 }
 
@@ -328,7 +349,7 @@ class Line {
   display() {
     // easeInOutQuad イージング関数を適用
     const ease = this.progress < 0.5 ? 2 * this.progress * this.progress : 1 - pow(-2 * this.progress + 2, 2) / 2;
-    
+
     // 線の本体を描画
     stroke(0);
     strokeWeight(2); // 太さを一定に
@@ -341,8 +362,8 @@ class Line {
   isClicked(mx, my) {
     // 点と線分までの距離を計算
     const d = distToSegment(mx, my, this.p1.x, this.p1.y, this.p2.x, this.p2.y);
-    // 距離が一定以下ならクリックされたとみなす
-    return d < 10;
+    // 距離が一定以下ならクリックされたとみなす (当たり判定を拡大)
+    return d < 20;
   }
 }
 
@@ -356,7 +377,7 @@ class WaCircle {
 
     const d13_24 = p1_.dist(p3_) + p2_.dist(p4_);
     const d14_23 = p1_.dist(p4_) + p2_.dist(p3_);
-    
+
     // アニメーションの開始アンカーポイント
     this.anchors_start = [];
     if (d13_24 < d14_23) {
@@ -367,7 +388,7 @@ class WaCircle {
 
     // 最終的な円の中心と半径
     this.center = createVector((p1_.x + p2_.x + p3_.x + p4_.x) / 4, (p1_.y + p2_.y + p3_.y + p4_.y) / 4);
-    
+
     // 2本の線の合計長から円の半径を計算
     const len1 = p1_.dist(p2_);
     const len2 = p3_.dist(p4_);
@@ -403,13 +424,13 @@ class WaCircle {
     this.holdTimer = 0;
     this.holdDuration = 60; // 60フレーム（約1秒）の間表示をキープ
   }
-  
+
   update() {
     if (this.state === 'forming') {
       this.formProgress = min(1, this.formProgress + 0.01); // スピード調整
       if (this.formProgress >= 1) {
         this.state = 'holding';
-        
+
         // ★★★ 円の大きさに応じてサウンドを再生 ★★★
         if (this.radius < 60) {
           soundSmall.play();
@@ -431,14 +452,14 @@ class WaCircle {
       }
     }
   }
-  
+
   display() {
     let alpha = 255;
-    
+
     // --- 円の描画 ---
     // forming イージング
     const formEase = this.formProgress < 0.5 ? 2 * this.formProgress * this.formProgress : 1 - pow(-2 * this.formProgress + 2, 2) / 2;
-    
+
     // fading イージング
     if (this.state === 'fading') {
       const fadeEase = this.fadeProgress * this.fadeProgress; // easeInQuad
@@ -451,7 +472,7 @@ class WaCircle {
 
     // 現在のアンカーポイントを計算
     const current_anchors = [];
-    for(let i=0; i<4; i++){
+    for (let i = 0; i < 4; i++) {
       current_anchors.push(p5.Vector.lerp(this.anchors_start[i], this.anchors_end[i], formEase));
     }
 
@@ -463,18 +484,18 @@ class WaCircle {
 
     // 現在の制御点を計算
     const current_controls = [];
-    for(let i=0; i<8; i++){
+    for (let i = 0; i < 8; i++) {
       current_controls.push(p5.Vector.lerp(controls_start[i], this.controls_end[i], formEase));
     }
-    
+
     // 4つのベジェ曲線で滑らかな図形を描画
     beginShape();
     vertex(current_anchors[0].x, current_anchors[0].y);
     for (let i = 0; i < 4; i++) {
       const next_i = (i + 1) % 4;
       bezierVertex(
-        current_controls[i*2].x, current_controls[i*2].y,
-        current_controls[i*2+1].x, current_controls[i*2+1].y,
+        current_controls[i * 2].x, current_controls[i * 2].y,
+        current_controls[i * 2 + 1].x, current_controls[i * 2 + 1].y,
         current_anchors[next_i].x, current_anchors[next_i].y
       );
     }
@@ -496,7 +517,7 @@ class WaCircle {
         textAlpha = alpha;
         currentSize = finalSize;
       }
-      
+
       fill(0, textAlpha);
       noStroke();
       textAlign(CENTER, CENTER);
